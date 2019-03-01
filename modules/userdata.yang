@@ -1,0 +1,15 @@
+module userdata
+{
+	namespace "urn:userdata";
+	prefix "testdata1495";
+	
+	container testdata
+	{
+		leaf number
+		{
+			type int32;
+			description
+				"Test state data for get-config RPC.";
+		}
+	}
+}

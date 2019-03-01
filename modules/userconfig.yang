@@ -1,0 +1,15 @@
+module userconfig
+{
+	namespace "urn:userconfig";
+	prefix "testcfg1495";
+	
+	container testnode
+	{
+		leaf number
+		{
+			type int32;
+			description
+				"Test data for get-config RPC.";
+		}
+	}
+}
