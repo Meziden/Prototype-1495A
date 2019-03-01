@@ -1,4 +1,4 @@
-# NETCONF Server /Prototype 1495A
+# NETCONF Server / Prototype 1495A
   
 The implementation of the server contains：  
 **Located in main.cpp:**
