@@ -1,6 +1,6 @@
 # NETCONF Server /Prototype 1495A
   
-The implementation of the server contains：
+The implementation of the server contains：  
 **Located in main.cpp:**
  - Main Thread：NETCONF context initializing and control.
  - Server Thread：Maintains NETCONF sessions.
