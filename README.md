@@ -14,7 +14,7 @@ The implementation of the server contains：
  - (Not Complete) SSH/TLS Authentication：SSH/TLS auth. callbacks.
 ---------
 **RPC Handlers**
- **Necessary, Working**
+ **Necessary, features not complete.**
  1. get
  2. get-config(filter not implemented)
  3. get-schema(integrated)
@@ -22,11 +22,11 @@ The implementation of the server contains：
  5. unlock
  6. kill-sesssion
  7. close-session(integrated)
+ 8. copy-config(access control and in-program operation not complete)
  
- **Necessary, Waiting for Filewatch Thread to complete**
- 1. copy-config
+ **Necessary, In plan.**
  2. edit-config
  3. delete-config
  
  **Optional, Waiting for Filewatch Thread to complete**
- 1. commit
+ 1. commit(adding new datastore)
