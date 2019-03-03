@@ -111,12 +111,12 @@ int main(int argc, char** argv)
 	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-system", NULL);
 	nc_assert(module);
-	module = ly_ctx_load_module(ctx, "nc-notifications", NULL);
-	nc_assert(module);
-	module = ly_ctx_load_module(ctx, "notifications", NULL);
-	nc_assert(module);
-	module = ly_ctx_load_module(ctx, "ietf-netconf-with-defaults", NULL);
-	nc_assert(module);
+	//module = ly_ctx_load_module(ctx, "nc-notifications", NULL);
+	//nc_assert(module);
+	//module = ly_ctx_load_module(ctx, "notifications", NULL);
+	//nc_assert(module);
+	//module = ly_ctx_load_module(ctx, "ietf-netconf-with-defaults", NULL);
+	//nc_assert(module);
 	
 	/* User Defined Modules */
 	module = ly_ctx_load_module(ctx, "userconfig", NULL);
@@ -201,8 +201,8 @@ int main(int argc, char** argv)
 	pthread_create(&server_tid, NULL, server_thread_entry, NULL);
 	
 	/* Start Notificator Thread */
-	pthread_t notificator_tid;
-	pthread_create(&notificator_tid, NULL, notificator_thread_entry, NULL);
+	//pthread_t notificator_tid;
+	//pthread_create(&notificator_tid, NULL, notificator_thread_entry, NULL);
 	
 	/* Start Filewatch Thread */
 	pthread_t filewatch_tid;
@@ -212,7 +212,7 @@ int main(int argc, char** argv)
 	
 	/* Thread Scheduling */
 	pthread_join(filewatch_tid, NULL);
-	pthread_join(notificator_tid, NULL);
+	//pthread_join(notificator_tid, NULL);
 	pthread_join(server_tid, NULL);
 	
 	/* Stop NETCONF server */
