@@ -13,12 +13,18 @@ extern struct ly_ctx* ctx;
 extern struct nc_pollsession* g_pollsession;
 
 /* Global Datastore Pointer, maintained by fdmonitor thread. */
-extern struct lyd_node* g_node_config;
+extern struct lyd_node* g_node_running;
+extern struct lyd_node* g_node_candidate;
 extern struct lyd_node* g_node_state;
 
-/* Global Access Control */
-extern pthread_mutex_t g_locksid_mutex;
-extern volatile uint32_t g_locksid;
+/* Global Datastore Access Control */
+extern pthread_mutex_t g_sidmutex_running;
+extern volatile uint32_t g_sid_running;
+extern pthread_mutex_t g_sidmutex_candidate;
+extern volatile uint32_t g_sid_candidate;
+/* File Sync Flags */
+bool syncflag_running = 0;
+bool syncflag_candidate = 0;
 
 struct nc_server_reply* rpc_callback_get(struct lyd_node* rpc,struct nc_session *session)
 {
@@ -26,27 +32,27 @@ struct nc_server_reply* rpc_callback_get(struct lyd_node* rpc,struct nc_session 
 	
 	/* Duplicate the <rpc> data, directly get the correct XPath in schema. */
 	struct lyd_node* data = lyd_dup(rpc, LYD_DUP_OPT_RECURSIVE);
-	struct lyd_node* data_config = NULL;
+	struct lyd_node* source_data = NULL;
 	struct lyd_node* data_state = NULL;
 	
 	/* Add state data for <get> operation. */
 	if(!strcmp(rpc->schema->name, "get"))
 	{
-		data_config = lyd_dup(g_node_config,LYD_DUP_OPT_RECURSIVE);
+		source_data = lyd_dup(g_node_running,LYD_DUP_OPT_RECURSIVE);
 		data_state = lyd_dup(g_node_state,LYD_DUP_OPT_RECURSIVE);
 		/* Combine Return Data. */
-		lyd_insert_after(data_config, data_state);
+		lyd_insert_after(source_data, data_state);
 	}
 	/* Choose correct datastore for <get-config> operation. */
 	else
 	{
 		struct ly_set* nodeset = lyd_find_path(rpc, "/ietf-netconf:get-config/source/*");
 		if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
-			data_config = lyd_dup(g_node_config,LYD_DUP_OPT_RECURSIVE);
-		else if (!strcmp(nodeset->set.d[0]->schema->name, "startup"))
-			data_config = NULL;
+			source_data = lyd_dup(g_node_running,LYD_DUP_OPT_RECURSIVE);
 		else if (!strcmp(nodeset->set.d[0]->schema->name, "candidate"))
-			data_config = NULL;
+			source_data = lyd_dup(g_node_candidate,LYD_DUP_OPT_RECURSIVE);
+		//else if (!strcmp(nodeset->set.d[0]->schema->name, "startup"))
+		//	source_data = NULL;
 		else
 			printf("[RPC Handler] <get-config> Unexpected datastore source.");	
 		ly_set_free(nodeset);
@@ -55,7 +61,7 @@ struct nc_server_reply* rpc_callback_get(struct lyd_node* rpc,struct nc_session 
 	/* TODO YANG Data Instance Filter */
 	
 	/* Link the data node to the <rpc-reply> YANG Data Instance. */
-	lyd_new_output_anydata(data, NULL, "data", data_config, LYD_ANYDATA_DATATREE);
+	lyd_new_output_anydata(data, NULL, "data", source_data, LYD_ANYDATA_DATATREE);
 	lyd_validate(&data, LYD_OPT_RPCREPLY, NULL);
 	
 	/* Send <rpc-reply> */
@@ -72,20 +78,63 @@ struct nc_server_reply* rpc_callback_edit(struct lyd_node* rpc, struct nc_sessio
 struct nc_server_reply* rpc_callback_copy(struct lyd_node* rpc, struct nc_session *session)
 {
 	printf("<copy-config> RPC Received.\n");
-	struct lyd_node* data_config = NULL;
-	/* Search for the config <anyxml> element. */
-	struct ly_set* nodeset = lyd_find_path(rpc, "/ietf-netconf:copy-config/source/config");
-	//DEBUG
-	if(nodeset->number == 0)
-	{
-		printf("WARNING: Unexpected Empty Data.\n");
-		return nc_server_reply_ok();
-	}
+	struct lyd_node* source_data = NULL;
+	struct lyd_node* target_node = NULL;
+	struct ly_set* nodeset = NULL;
 	
+	/* Processing target argument, check permission */
+	nodeset = lyd_find_path(rpc, "/ietf-netconf:copy-config/target/*");
 	if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
-		printf("RUNNING.\n");
-	else if (!strcmp(nodeset->set.d[0]->schema->name, "startup"))
-		printf("STARTUP.\n");
+	{
+		/* Keep holding sid 0 unchanged until write operation complete. */
+		pthread_mutex_lock(&g_sidmutex_running);
+		if(g_sid_running == 0)
+		{
+			// Do NOT unlock here or the write operation may be interrupted.
+			target_node = g_node_running;
+			syncflag_running = 1;
+		}
+		else
+		{
+			pthread_mutex_unlock(&g_sidmutex_running);
+			return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_running));
+		}
+	}
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "candidate"))
+	{
+		pthread_mutex_lock(&g_sidmutex_candidate);
+		if(g_sid_candidate == 0)
+		{
+			// Do NOT unlock here or the write operation may be interrupted.
+			target_node = g_node_candidate;
+			syncflag_candidate = 1;
+		}
+		else
+		{
+			pthread_mutex_unlock(&g_sidmutex_candidate);
+			return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_candidate));
+		}
+	}
+	else
+		printf("[RPC Handler] <copy-config> Unexpected <target>.\n");	
+	ly_set_free(nodeset);
+	
+	/* Processing source argument */
+	nodeset = lyd_find_path(rpc, "/ietf-netconf:copy-config/source/*");
+	if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
+	{
+		if(target_node == g_node_running)
+			return nc_server_reply_ok();
+		else
+			source_data = lyd_dup(g_node_running, LYD_DUP_OPT_RECURSIVE);
+	}
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "candidate"))
+	{
+		if(target_node == g_node_candidate)
+			return nc_server_reply_ok();
+		else
+			source_data = lyd_dup(g_node_candidate, LYD_DUP_OPT_RECURSIVE);
+	}
 	else if (!strcmp(nodeset->set.d[0]->schema->name, "config"))
 	{	
 		/* Get struct lyd_node_anydata */
@@ -93,20 +142,33 @@ struct nc_server_reply* rpc_callback_copy(struct lyd_node* rpc, struct nc_sessio
 		
 		/* Reconstruct YANG Data Instance node, to get correct YANG Schema node */
 		if(anydata -> value_type == LYD_ANYDATA_XML)
-			data_config = lyd_parse_xml(ctx, &anydata->value.xml, LYD_OPT_CONFIG);
+			source_data = lyd_parse_xml(ctx, &anydata->value.xml, LYD_OPT_CONFIG);
 		
-		/* Merge Configuration */
-		lyd_merge(g_node_config, data_config, LYD_OPT_NOSIBLINGS);
-		
-		/* Synchronizing Configuration Files */
-		lyd_print_path("./configs/userconfig.xml", g_node_config, LYD_XML, LYP_FORMAT);
 	}
 	else
-		printf("[RPC Handler] <copy-config> Unexpected source.\n");	
-	
+		printf("[RPC Handler] <copy-config> Unexpected <source>.\n");	
 	ly_set_free(nodeset);
+	
+	
+	/* Merge Configuration */
+	lyd_merge(target_node, source_data, LYD_OPT_EXPLICIT);
+	
+	/* Synchronizing Configuration Files */
+	if(syncflag_running)
+	{
+		syncflag_running = 0;
+		lyd_print_path("./configs/userconfig.xml", g_node_running, LYD_XML, LYP_FORMAT);
+		pthread_mutex_unlock(&g_sidmutex_running);
+	}
+	if(syncflag_candidate)
+	{
+		syncflag_candidate = 0;
+		lyd_print_path("./configs/userconfig_candidate.xml", g_node_candidate, LYD_XML, LYP_FORMAT);
+		pthread_mutex_unlock(&g_sidmutex_candidate);
+	}
+	
 	/* Use lyd_free_withsiblings here, 'cause additional info is added in config. */
-	lyd_free_withsiblings(data_config);
+	lyd_free_withsiblings(source_data);
 	return nc_server_reply_ok();
 }
 
@@ -120,47 +182,113 @@ struct nc_server_reply* rpc_callback_delete(struct lyd_node* rpc, struct nc_sess
 struct nc_server_reply* rpc_callback_lock(struct lyd_node* rpc,struct nc_session *session)
 {
 	printf("<lock> RPC Received.\n");
-	/* Lock the datastore sid mutex. */
-	pthread_mutex_lock(&g_locksid_mutex);
-	if(g_locksid == 0)
+	
+	/* Processing target argument, check permission */
+	struct ly_set* nodeset = lyd_find_path(rpc, "/ietf-netconf:lock/target/*");
+	if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
 	{
-		g_locksid = nc_session_get_id(session);
-		pthread_mutex_unlock(&g_locksid_mutex);
-		return nc_server_reply_ok();
+		ly_set_free(nodeset);
+		
+		/* Lock the datastore sid mutex. */
+		pthread_mutex_lock(&g_sidmutex_running);
+		if(g_sid_running == 0)
+		{
+			g_sid_running = nc_session_get_id(session);
+			pthread_mutex_unlock(&g_sidmutex_running);
+			return nc_server_reply_ok();
+		}
+		else
+		{
+			pthread_mutex_unlock(&g_sidmutex_running);
+			return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_running));
+		}
+	}
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "candidate"))
+	{
+		ly_set_free(nodeset);
+		
+		/* Lock the datastore sid mutex. */
+		pthread_mutex_lock(&g_sidmutex_candidate);
+		if(g_sid_candidate == 0)
+		{
+			g_sid_candidate = nc_session_get_id(session);
+			pthread_mutex_unlock(&g_sidmutex_candidate);
+			return nc_server_reply_ok();
+		}
+		else
+		{
+			pthread_mutex_unlock(&g_sidmutex_candidate);
+			return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_candidate));
+		}
 	}
 	else
-	{
-		pthread_mutex_unlock(&g_locksid_mutex);
-		return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_locksid));
-	}
+		printf("[RPC Handler] <lock> Unexpected <target>.\n");	
+	ly_set_free(nodeset);
+	return nc_server_reply_err(nc_err(NC_ERR_OP_FAILED, NC_ERR_TYPE_APP));
 }
 
 struct nc_server_reply* rpc_callback_unlock(struct lyd_node* rpc,struct nc_session *session)
 {
 	printf("<unlock> RPC Received.\n");
-	/* Lock the datastore sid mutex. */
-	pthread_mutex_lock(&g_locksid_mutex);
-	if(g_locksid == nc_session_get_id(session))
+	
+	/* Processing target argument, check permission */
+	struct ly_set* nodeset = lyd_find_path(rpc, "/ietf-netconf:unlock/target/*");
+	if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
 	{
-		g_locksid = 0;
-		pthread_mutex_unlock(&g_locksid_mutex);
-		return nc_server_reply_ok();
+		ly_set_free(nodeset);
+		pthread_mutex_lock(&g_sidmutex_running);
+		if(g_sid_running == nc_session_get_id(session))
+		{
+			g_sid_running = 0;
+			pthread_mutex_unlock(&g_sidmutex_running);
+			return nc_server_reply_ok();
+		}
+		else
+		{
+			struct nc_server_error* e;
+			if(!g_sid_running)
+			{
+				e = nc_err(NC_ERR_OP_FAILED, NC_ERR_TYPE_APP);
+		    	nc_err_set_msg(e, "[RPC Handler] The <running> lock is not active.", "en");
+		    }
+		    else
+		    {
+		    	e = nc_err(NC_ERR_LOCK_DENIED, g_sid_running);
+		    }
+			pthread_mutex_unlock(&g_sidmutex_running);
+		    return nc_server_reply_err(e);
+		}
+	}
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "candidate"))
+	{
+		ly_set_free(nodeset);
+		pthread_mutex_lock(&g_sidmutex_candidate);
+		if(g_sid_candidate == nc_session_get_id(session))
+		{
+			g_sid_candidate = 0;
+			pthread_mutex_unlock(&g_sidmutex_candidate);
+			return nc_server_reply_ok();
+		}
+		else
+		{
+			struct nc_server_error* e;
+			if(!g_sid_candidate)
+			{
+				e = nc_err(NC_ERR_OP_FAILED, NC_ERR_TYPE_APP);
+		    	nc_err_set_msg(e, "[RPC Handler] The <candidate> lock is not active.", "en");
+		    }
+		    else
+		    {
+		    	e = nc_err(NC_ERR_LOCK_DENIED, g_sid_candidate);
+		    }
+			pthread_mutex_unlock(&g_sidmutex_candidate);
+		    return nc_server_reply_err(e);
+		}
 	}
 	else
-	{
-		pthread_mutex_unlock(&g_locksid_mutex);
-		struct nc_server_error* e;
-		if(!g_locksid)
-		{
-			e = nc_err(NC_ERR_OP_FAILED, NC_ERR_TYPE_APP);
-        	nc_err_set_msg(e, "[RPC Handler] The lock is not active.", "en");
-        }
-        else
-        {
-        	e = nc_err(NC_ERR_LOCK_DENIED, g_locksid);
-        }
-        return nc_server_reply_err(e);
-	}
+		printf("[RPC Handler] <lock> Unexpected <target>.\n");	
+	ly_set_free(nodeset);
+	return nc_server_reply_err(nc_err(NC_ERR_OP_FAILED, NC_ERR_TYPE_APP));
 }
 
 /* disconnect command.
@@ -213,5 +341,17 @@ struct nc_server_reply* rpc_callback_kill(struct lyd_node* rpc, struct nc_sessio
 struct nc_server_reply* rpc_callback_commit(struct lyd_node* rpc,struct nc_session *session)
 {
 	printf("<commit> RPC Received.\n");
-	return nc_server_reply_ok();
+	pthread_mutex_lock(&g_sidmutex_running);
+	if(g_sid_running == 0)
+	{
+		lyd_merge(g_node_running, g_node_candidate, LYD_OPT_EXPLICIT);
+		lyd_print_path("./configs/userconfig.xml", g_node_running, LYD_XML, LYP_FORMAT);
+		pthread_mutex_unlock(&g_sidmutex_running);
+		return nc_server_reply_ok();
+	}
+	else
+	{
+		pthread_mutex_unlock(&g_sidmutex_running);
+	    return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_running));
+	}
 }
