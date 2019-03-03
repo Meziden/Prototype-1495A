@@ -24,9 +24,9 @@ The implementation of the server contains：
  7. close-session(integrated)
  8. copy-config(access control and in-program operation not complete)
  
- **Necessary, In plan.**
- 2. edit-config
- 3. delete-config
+ **Necessary, In plan.**  
+ 1. edit-config
+ 2. delete-config
  
  **Optional, Waiting for Filewatch Thread to complete**
  1. commit(adding new datastore)
