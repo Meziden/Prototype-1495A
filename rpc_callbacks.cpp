@@ -6,6 +6,9 @@
 #include <nc_server.h>
 #include "rpc_callbacks.h"
 
+/* Global Libyang Context Pointer */
+extern struct ly_ctx* ctx;
+
 /* Global Pollsession Pointers */
 extern struct nc_pollsession* g_pollsession;
 
@@ -69,6 +72,7 @@ struct nc_server_reply* rpc_callback_edit(struct lyd_node* rpc, struct nc_sessio
 struct nc_server_reply* rpc_callback_copy(struct lyd_node* rpc, struct nc_session *session)
 {
 	printf("<copy-config> RPC Received.\n");
+	struct lyd_node* data_config = NULL;
 	/* Search for the config <anyxml> element. */
 	struct ly_set* nodeset = lyd_find_path(rpc, "/ietf-netconf:copy-config/source/config");
 	//DEBUG
@@ -77,31 +81,32 @@ struct nc_server_reply* rpc_callback_copy(struct lyd_node* rpc, struct nc_sessio
 		printf("WARNING: Unexpected Empty Data.\n");
 		return nc_server_reply_ok();
 	}
-	else
-	{
-		lyd_print_file(stdout,nodeset->set.d[0], LYD_XML, LYP_FORMAT | LYP_WITHSIBLINGS);
-	}
 	
-	struct lyd_node* data = lyd_dup(nodeset->set.d[0], LYD_DUP_OPT_RECURSIVE);
-	struct lyd_node* data_config = lyd_dup(g_node_config,LYD_DUP_OPT_RECURSIVE);
-	
-	if (!strcmp(data->schema->name, "running"))
+	if (!strcmp(nodeset->set.d[0]->schema->name, "running"))
 		printf("RUNNING.\n");
-	else if (!strcmp(data->schema->name, "startup"))
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "startup"))
 		printf("STARTUP.\n");
-	else if (!strcmp(data->schema->name, "config"))
+	else if (!strcmp(nodeset->set.d[0]->schema->name, "config"))
 	{	
-		//data->schema = data_config->schema;
-		data->parent = data_config->parent;
-		if(lyd_insert(g_node_config, data));//, LYD_OPT_EXPLICIT));
-			printf("WARNING!\n");
+		/* Get struct lyd_node_anydata */
+		struct lyd_node_anydata* anydata = (struct lyd_node_anydata*)nodeset->set.d[0];
+		
+		/* Reconstruct YANG Data Instance node, to get correct YANG Schema node */
+		if(anydata -> value_type == LYD_ANYDATA_XML)
+			data_config = lyd_parse_xml(ctx, &anydata->value.xml, LYD_OPT_CONFIG);
+		
+		/* Merge Configuration */
+		lyd_merge(g_node_config, data_config, LYD_OPT_NOSIBLINGS);
+		
+		/* Synchronizing Configuration Files */
+		lyd_print_path("./configs/userconfig.xml", g_node_config, LYD_XML, LYP_FORMAT);
 	}
 	else
 		printf("[RPC Handler] <copy-config> Unexpected source.\n");	
 	
 	ly_set_free(nodeset);
-	lyd_free(data);
-	lyd_free(data_config);
+	/* Use lyd_free_withsiblings here, 'cause additional info is added in config. */
+	lyd_free_withsiblings(data_config);
 	return nc_server_reply_ok();
 }
 
