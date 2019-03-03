@@ -1,7 +1,7 @@
 /* 
  * A naive implementation of NETCONF server
  * Based on CESNET/libnetconf2 C-API
- * Revision : 20190224-alpha1
+ * Revision : 20190303-alpha1
  */
 #include <errno.h>
 #include <stdio.h>
@@ -25,23 +25,6 @@
 #define NC_ENABLED_SSH
 #define NC_ENABLED_TLS
 
-/* Global Libyang Context Pointer */
-struct ly_ctx* ctx = NULL;
-
-/* Global Pollsession Pointers */
-struct nc_pollsession* g_pollsession = NULL;
-
-/* Global Datastore Pointers */
-struct lyd_node* g_node_config;
-struct lyd_node* g_node_state;
-/* Global Datastore Filepath */
-const char* CONFIG_XML_PATH = "configs/userconfig.xml";
-const char* STATE_XML_PATH = "configs/userdata.xml";
-
-/* Global Datastore Access Control, for running datastore. */
-pthread_mutex_t g_locksid_mutex;
-volatile uint32_t g_locksid;
-
 /* Constants */
 const char* 	SEARCH_PATH 	= "./modules/";
 const char* 	CONFIG_PATH 	= "./configs/";
@@ -52,6 +35,27 @@ const uint16_t	SERVER_PORT 	= 830;
 const int SERVER_ACCEPT_TIMEOUT = 0;
 /* millisec , 0 for non-block */
 const int SERVER_POLL_TIMEOUT = 0;
+
+/* Global Libyang Context Pointer */
+struct ly_ctx* ctx = NULL;
+
+/* Global Pollsession Pointers */
+struct nc_pollsession* g_pollsession = NULL;
+
+/* Global Datastore Pointers */
+struct lyd_node* g_node_running;
+struct lyd_node* g_node_candidate;
+struct lyd_node* g_node_state;
+/* Global Datastore Filepath */
+const char* RUNNING_XML_PATH = "configs/userconfig.xml";
+const char* CANDIDATE_XML_PATH = "configs/userconfig_candidate.xml";
+const char* STATE_XML_PATH = "configs/userdata.xml";
+
+/* Global Datastore Access Control */
+pthread_mutex_t g_sidmutex_running;
+volatile uint32_t g_sid_running;
+pthread_mutex_t g_sidmutex_candidate;
+volatile uint32_t g_sid_candidate;
 
 /* Global Control Flags */
 int g_ctl_server = 1;
@@ -68,7 +72,8 @@ void* filewatch_thread_entry(void* arg);
 const uint32_t FILEWATCH_MODE = IN_OPEN | IN_CLOSE | IN_DELETE | IN_CREATE;
 const int FILEWATCH_BUFSIZE = 4096;
 int fd_filewatch;
-int wd_config;
+int wd_running;
+int wd_candidate;
 int wd_state;
 
 /* Notificator Thread Entry Prototype */
@@ -125,15 +130,18 @@ int main(int argc, char** argv)
 	nc_assert(module);
 	
 	/* YANG Data Instance - XML Parsing */
-	g_node_config = lyd_parse_path(ctx, CONFIG_XML_PATH, LYD_XML, LYD_OPT_CONFIG);
-	nc_assert(g_node_config);
+	g_node_running = lyd_parse_path(ctx, RUNNING_XML_PATH, LYD_XML, LYD_OPT_CONFIG);
+	nc_assert(g_node_running);
+	g_node_candidate = lyd_parse_path(ctx, CANDIDATE_XML_PATH, LYD_XML, LYD_OPT_CONFIG);
+	nc_assert(g_node_candidate);
 	g_node_state = lyd_parse_path(ctx, STATE_XML_PATH, LYD_XML, LYD_OPT_DATA_ADD_YANGLIB);
 	nc_assert(g_node_state);
 	
 	//DEBUG
 	//lyd_print_file(stdout, g_node_state, LYD_XML, LYP_FORMAT);
 	
-	lyd_validate(&g_node_config, LYD_OPT_CONFIG, NULL);
+	lyd_validate(&g_node_running, LYD_OPT_CONFIG, NULL);
+	lyd_validate(&g_node_candidate, LYD_OPT_CONFIG, NULL);
 	lyd_validate(&g_node_state, LYD_OPT_DATA, NULL);
 	
 	/* Set RPC Callbacks */
@@ -218,7 +226,8 @@ int main(int argc, char** argv)
 	/* Stop NETCONF server */
 	printf("[Main Thread] Cleaning up allocated resource.\n");
 	nc_server_destroy();
-	lyd_free_withsiblings(g_node_config);
+	lyd_free_withsiblings(g_node_running);
+	lyd_free_withsiblings(g_node_candidate);
 	lyd_free_withsiblings(g_node_state);
 	ly_ctx_clean(ctx, NULL);
 	ly_ctx_destroy(ctx, NULL);
@@ -233,7 +242,10 @@ void* filewatch_thread_entry(void* arg)
 	fd_filewatch = inotify_init1(IN_NONBLOCK);
 	if(fd_filewatch <= 0)
 		printf("[Filewatch Thread] ERROR: Failed to init Inotify.\n");
-	wd_config = inotify_add_watch(fd_filewatch, CONFIG_XML_PATH, FILEWATCH_MODE);
+	wd_running = inotify_add_watch(fd_filewatch, RUNNING_XML_PATH, FILEWATCH_MODE);
+	if(fd_filewatch <= 0)
+		printf("[Filewatch Thread] ERROR: Failed to init Inotify.\n");
+	wd_candidate = inotify_add_watch(fd_filewatch, CANDIDATE_XML_PATH, FILEWATCH_MODE);
 	if(fd_filewatch <= 0)
 		printf("[Filewatch Thread] ERROR: Failed to init Inotify.\n");
 	wd_state = inotify_add_watch(fd_filewatch, STATE_XML_PATH, FILEWATCH_MODE);
@@ -275,36 +287,68 @@ void* filewatch_thread_entry(void* arg)
     	    /* Handle events and TODO update YANG data instance / send notofication. */
 			while(event_length > 0)
 			{
-				if(event_ptr -> wd == wd_config)
+				if(event_ptr -> wd == wd_running)
 				{
 					if(event_ptr -> mask & IN_OPEN)
 					{
-						printf("[Filewatch Thread] Config File Opened.\n");
+						printf("[Filewatch Thread] Running Config File Opened.\n");
 					}
 					if(event_ptr -> mask & IN_CLOSE_NOWRITE)
 					{
-						printf("[Filewatch Thread] Config File Closed, not written.\n");
+						printf("[Filewatch Thread] Running Config File Closed, not written.\n");
 					}
 					if(event_ptr -> mask & IN_CLOSE_WRITE)
 					{
-						printf("[Filewatch Thread] Config File Closed, written.\n");
+						printf("[Filewatch Thread] Running Config File Closed, written.\n");
 					}
 					if(event_ptr -> mask & IN_CREATE)
 					{
-						printf("[Filewatch Thread] Config File Created.\n");
+						printf("[Filewatch Thread] Running Config File Created.\n");
 					}
 					if(event_ptr -> mask & IN_DELETE)
 					{
-						printf("[Filewatch Thread] Config File Deleted.\n");
+						printf("[Filewatch Thread] Running Config File Deleted.\n");
 					}
 					if(event_ptr -> mask == 32768)
 					{
-						printf("[Filewatch Thread] Config File inode Removed, monitoring new node.\n");
+						printf("[Filewatch Thread] Running Config File inode Removed, monitoring new node.\n");
 						if(fd_filewatch <= 0)
 							printf("[Filewatch Thread] ERROR: Failed to add inode.\n");
-						wd_config = inotify_add_watch(fd_filewatch, CONFIG_XML_PATH, FILEWATCH_MODE);
+						wd_running = inotify_add_watch(fd_filewatch, RUNNING_XML_PATH, FILEWATCH_MODE);
 					}
 				}
+				
+				if(event_ptr -> wd == wd_candidate)
+				{
+					if(event_ptr -> mask & IN_OPEN)
+					{
+						printf("[Filewatch Thread] Candidate Config File Opened.\n");
+					}
+					if(event_ptr -> mask & IN_CLOSE_NOWRITE)
+					{
+						printf("[Filewatch Thread] Candidate Config File Closed, not written.\n");
+					}
+					if(event_ptr -> mask & IN_CLOSE_WRITE)
+					{
+						printf("[Filewatch Thread] Candidate Config File Closed, written.\n");
+					}
+					if(event_ptr -> mask & IN_CREATE)
+					{
+						printf("[Filewatch Thread] Candidate Config File Created.\n");
+					}
+					if(event_ptr -> mask & IN_DELETE)
+					{
+						printf("[Filewatch Thread] Candidate Config File Deleted.\n");
+					}
+					if(event_ptr -> mask == 32768)
+					{
+						printf("[Filewatch Thread] Candidate Config File inode Removed, monitoring new node.\n");
+						if(fd_filewatch <= 0)
+							printf("[Filewatch Thread] ERROR: Failed to add inode.\n");
+						wd_running = inotify_add_watch(fd_filewatch, CANDIDATE_XML_PATH, FILEWATCH_MODE);
+					}
+				}
+				
 				if(event_ptr -> wd == wd_state)
 				{
 					if(event_ptr -> mask & IN_OPEN)
@@ -332,7 +376,7 @@ void* filewatch_thread_entry(void* arg)
 						printf("[Filewatch Thread] State File inode Removed, monitoring new node.\n");
 					if(fd_filewatch <= 0)
 						printf("[Filewatch Thread] ERROR: Failed to add inode.\n");
-						wd_config = inotify_add_watch(fd_filewatch, STATE_XML_PATH, FILEWATCH_MODE);
+						wd_running = inotify_add_watch(fd_filewatch, STATE_XML_PATH, FILEWATCH_MODE);
 					}
 				}
 				/* Flush the buffered stdout, for real-time monitoring. */
@@ -343,7 +387,8 @@ void* filewatch_thread_entry(void* arg)
 		}
 	}
 	printf("[Filewatch Thread] Cleaning up allocated resource.\n");
-	inotify_rm_watch(fd_filewatch, wd_config);
+	inotify_rm_watch(fd_filewatch, wd_running);
+	inotify_rm_watch(fd_filewatch, wd_candidate);
 	inotify_rm_watch(fd_filewatch, wd_state);
 	close(fd_filewatch);
 	nc_thread_destroy();
@@ -389,13 +434,21 @@ void* server_thread_entry(void* arg)
 		if(poll_ret & NC_PSPOLL_SESSION_TERM)
 		{
 			/* Access Control : Release closed session controlled datastores */
-			pthread_mutex_lock(&g_locksid_mutex);
-			if(g_locksid == nc_session_get_id(session))
+			pthread_mutex_lock(&g_sidmutex_running);
+			if(g_sid_running == nc_session_get_id(session))
 			{
 				printf("[Server Thread] Releasing related datastore locks.\n");
-				g_locksid = 0;
+				g_sid_running = 0;
 			}
-			pthread_mutex_unlock(&g_locksid_mutex);
+			pthread_mutex_unlock(&g_sidmutex_running);
+			
+			pthread_mutex_lock(&g_sidmutex_candidate);
+			if(g_sid_candidate == nc_session_get_id(session))
+			{
+				printf("[Server Thread] Releasing related datastore locks.\n");
+				g_sid_candidate = 0;
+			}
+			pthread_mutex_unlock(&g_sidmutex_candidate);
 			
 			nc_assert(!nc_ps_del_session(g_pollsession, session));
 			nc_session_free(session, NULL);
@@ -410,7 +463,7 @@ void* server_thread_entry(void* arg)
 	}
 	printf("[Server Thread] Cleaning up allocated resource.\n");
 	nc_ps_clear(g_pollsession, 0, NULL);
-	pthread_mutex_destroy(&g_locksid_mutex);
+	pthread_mutex_destroy(&g_sidmutex_running);
     nc_ps_free(g_pollsession);
 	nc_thread_destroy();
 }
@@ -464,7 +517,7 @@ int unixenv_init(int argc, char** argv)
 	sigaction(SIGHUP, &action, NULL);
 	
 	/* Access Control related*/
-	pthread_mutex_init(&g_locksid_mutex, NULL);
+	pthread_mutex_init(&g_sidmutex_running, NULL);
 	
 	return 0;
 }
