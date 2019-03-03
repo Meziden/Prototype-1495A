@@ -3,7 +3,7 @@
 The implementation of the server contains：  
 **Located in main.cpp:**
  - Main Thread：NETCONF context initializing and control.
- - Server Thread：Maintains NETCONF sessions.
+ - Server Thread：NETCONF sessions management.
  - (Not Complete) Filewatch Thread：config file accesss control and YANG data instance maintaining.
  - (TODO) Notificator Thread：Notifications / state data.
 
@@ -14,7 +14,7 @@ The implementation of the server contains：
  - (Not Complete) SSH/TLS Authentication：SSH/TLS auth. callbacks.
 ---------
 **RPC Handlers**
- **Necessary, features not complete.**
+ **Working, but features are not complete.**
  1. get
  2. get-config(filter not implemented)
  3. get-schema(integrated)
@@ -24,11 +24,7 @@ The implementation of the server contains：
  7. close-session(integrated)
  8. copy-config
  9. delete-config
+ 10. commit
  
- **Necessary, In plan.**  
+ **Not Working, in progress.**  
  1. edit-config
-
-
-
- **Optional, Waiting for Filewatch Thread to complete**
- 1. commit(adding new datastore)
