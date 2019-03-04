@@ -14,7 +14,7 @@ The implementation of the server contains：
  - (Not Complete) SSH/TLS Authentication：SSH/TLS auth. callbacks.
 ---------
 **RPC Handlers**
- **Working, but features are not complete.**
+ **Working, with missing features.**
  1. get
  2. get-config(filter not implemented)
  3. get-schema(integrated)
