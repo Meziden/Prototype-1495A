@@ -1,3 +1,21 @@
 <testdata xmlns="urn:userdata">
   <number>1546</number>
 </testdata>
+
+<nacm xmlns="urn:ietf:params:xml:ns:yang:ietf-netconf-acm">
+  <denied-operations>0</denied-operations>
+  <denied-data-writes>0</denied-data-writes>
+  <denied-notifications>0</denied-notifications>
+</nacm>
+
+<!--MUST HAVE for nc-notification YANG module-->
+<netconf xmlns="urn:ietf:params:xml:ns:netmod:notification">
+  <streams>
+    <stream>
+      <name>NETCONF</name>
+      <description>no-description-here</description>
+      <replaySupport>true</replaySupport>
+      <replayLogCreationTime>2011-08-23T10:08:00Z</replayLogCreationTime>
+    </stream>
+  </streams>
+</netconf>
