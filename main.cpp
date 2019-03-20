@@ -1,7 +1,7 @@
 /* 
  * A naive implementation of NETCONF server
  * Based on CESNET/libnetconf2 C-API
- * Revision : 20190303-alpha1
+ * Revision : 20190320-alpha1
  */
 #include <errno.h>
 #include <stdio.h>
@@ -15,7 +15,7 @@
 
 /* SSH/TLS Authentication Related Callbacks*/
 #include "auth_callbacks.h"
-
+ 
 /* RPC Callbacks */
 #include "rpc_callbacks.h"
 
@@ -45,10 +45,12 @@ struct nc_pollsession* g_pollsession = NULL;
 /* Global Datastore Pointers */
 struct lyd_node* g_node_running;
 struct lyd_node* g_node_candidate;
+struct lyd_node* g_node_startup;
 struct lyd_node* g_node_state;
 /* Global Datastore Filepath */
 const char* RUNNING_XML_PATH = "configs/userconfig.xml";
 const char* CANDIDATE_XML_PATH = "configs/userconfig_candidate.xml";
+const char* STARTUP_XML_PATH = "configs/userconfig_startup.xml";
 const char* STATE_XML_PATH = "configs/userdata.xml";
 
 /* Global Datastore Access Control */
@@ -56,6 +58,8 @@ pthread_mutex_t g_sidmutex_running;
 volatile uint32_t g_sid_running;
 pthread_mutex_t g_sidmutex_candidate;
 volatile uint32_t g_sid_candidate;
+pthread_mutex_t g_sidmutex_startup;
+volatile uint32_t g_sid_startup;
 
 /* Global Control Flags */
 int g_ctl_server = 1;
@@ -91,6 +95,7 @@ int main(int argc, char** argv)
 	/* Create libyang Context */
 	ctx = ly_ctx_new(SEARCH_PATH, LY_CTX_TRUSTED);
 	nc_assert(ctx);
+
 	
 	/* YANG Schema - Load Modules */
 	/* 
@@ -101,26 +106,24 @@ int main(int argc, char** argv)
 	 * ietf-yang-types@2013-07-15
 	 * ietf-yang-library@2016-06-21
 	 */
+	module = ly_ctx_load_module(ctx, "ietf-netconf-acm", NULL);
+	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-netconf", NULL);
 	nc_assert(module);
-	
+
 	/* ietf-netconf module / optional feature configuration */
 	lys_features_enable(module, "candidate");
 	lys_features_enable(module, "writable-running");
 	
+	module = ly_ctx_load_module(ctx, "nc-notifications", NULL);
+	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-netconf-notifications", NULL);
 	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-netconf-monitoring", NULL);
 	nc_assert(module);
-	module = ly_ctx_load_module(ctx, "ietf-datastores", NULL);
-	nc_assert(module);
-	module = ly_ctx_load_module(ctx, "ietf-system", NULL);
-	nc_assert(module);
-	//module = ly_ctx_load_module(ctx, "nc-notifications", NULL);
+	//module = ly_ctx_load_module(ctx, "ietf-datastores", NULL);
 	//nc_assert(module);
-	//module = ly_ctx_load_module(ctx, "notifications", NULL);
-	//nc_assert(module);
-	//module = ly_ctx_load_module(ctx, "ietf-netconf-with-defaults", NULL);
+	//module = ly_ctx_load_module(ctx, "ietf-system", NULL);
 	//nc_assert(module);
 	
 	/* User Defined Modules */
@@ -147,49 +150,52 @@ int main(int argc, char** argv)
 	/* Set RPC Callbacks */
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:get", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_get);
+	lys_set_private(node, (void*)rpc_callback_get);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:get-config", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_get);
+	lys_set_private(node, (void*)rpc_callback_get);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:edit-config", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_edit);
+	lys_set_private(node, (void*)rpc_callback_edit);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:copy-config", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_copy);
+	lys_set_private(node, (void*)rpc_callback_copy);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:delete-config", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_delete);
+	lys_set_private(node, (void*)rpc_callback_delete);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:lock", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_lock);
+	lys_set_private(node, (void*)rpc_callback_lock);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:unlock", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_unlock);
+	lys_set_private(node, (void*)rpc_callback_unlock);
 	
 	//node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:close-session", 0);
 	//nc_assert(node);
-	//nc_set_rpc_callback(node, (void*)rpc_callback_close);
+	//lys_set_private(node, (void*)rpc_callback_close);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:kill-session", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_kill);
+	lys_set_private(node, (void*)rpc_callback_kill);
 	
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:commit", 0);
 	nc_assert(node);
-	nc_set_rpc_callback(node, (void*)rpc_callback_commit);
+	lys_set_private(node, (void*)rpc_callback_commit);
 	
 	/* NETCONF server init */
 	nc_server_init(ctx);
 	
 	/* NETCONF Capability Configuration */
 	nc_server_set_capab_withdefaults(NC_WD_EXPLICIT, NC_WD_ALL | NC_WD_ALL_TAG | NC_WD_TRIM | NC_WD_EXPLICIT);
+	/* set capabilities for the NETCONF Notifications */
+    nc_server_set_capability("urn:ietf:params:netconf:capability:notification:1.0");
+    nc_server_set_capability("urn:ietf:params:netconf:capability:interleave:1.0");
 	
 	/* SSH/TLS Authentication Settings */
 	nc_server_ssh_set_hostkey_clb(auth_callback_ssh_hostkey, NULL, NULL);
@@ -209,8 +215,8 @@ int main(int argc, char** argv)
 	pthread_create(&server_tid, NULL, server_thread_entry, NULL);
 	
 	/* Start Notificator Thread */
-	//pthread_t notificator_tid;
-	//pthread_create(&notificator_tid, NULL, notificator_thread_entry, NULL);
+	pthread_t notificator_tid;
+	pthread_create(&notificator_tid, NULL, notificator_thread_entry, NULL);
 	
 	/* Start Filewatch Thread */
 	pthread_t filewatch_tid;
@@ -220,12 +226,12 @@ int main(int argc, char** argv)
 	
 	/* Thread Scheduling */
 	pthread_join(filewatch_tid, NULL);
-	//pthread_join(notificator_tid, NULL);
+	pthread_join(notificator_tid, NULL);
 	pthread_join(server_tid, NULL);
 	
 	/* Stop NETCONF server */
 	printf("[Main Thread] Cleaning up allocated resource.\n");
-	nc_server_destroy();
+	nc_server_destroy();  
 	lyd_free_withsiblings(g_node_running);
 	lyd_free_withsiblings(g_node_candidate);
 	lyd_free_withsiblings(g_node_state);
@@ -237,7 +243,6 @@ int main(int argc, char** argv)
 void* filewatch_thread_entry(void* arg)
 {
 	printf("[Filewatch Thread] Initializing...\n");
-	
 	/* Add filepaths to the filewatch thread. */
 	fd_filewatch = inotify_init1(IN_NONBLOCK);
 	if(fd_filewatch <= 0)
@@ -491,7 +496,7 @@ void* notificator_thread_entry(void* arg)
 				nc_server_notif_send(session_ptr, notifdata, -1);
 			}
 		}
-		
+		printf("[Notificator Thread] Cyka Blyat!\n");
 		sleep(1);
 	}
 	printf("[Notificator Thread] Cleaning up allocated resource.\n");
