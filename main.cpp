@@ -483,26 +483,28 @@ void* notificator_thread_entry(void* arg)
 {
 	printf("[Notificator Thread] Started.\n");
 	pthread_mutex_init(&g_notif_mutex,NULL);
-	
+	sleep(10);
 	while(g_ctl_server)
 	{
-		char msg_buf[26] = {0};
-		const struct lys_module* mod = ly_ctx_get_module(ctx, "nc-notifications", NULL, 1);
-		struct lyd_node* event = lyd_new(NULL, mod, "replayComplete");
-		struct nc_server_notif* notifdata = nc_server_notif_new(event,
-											nc_time2datetime(time(NULL),NULL,msg_buf),
-											NC_PARAMTYPE_DUP_AND_FREE);
+		struct lyd_node* notif_tree = lyd_new_path(NULL, ctx, "/nc-notifications:notificationComplete", NULL, LYD_ANYDATA_DATATREE, LYD_OPT_DATA);
+		char msg_buf[64] = {0};
+		struct nc_server_notif* notif_data = nc_server_notif_new(notif_tree, nc_time2datetime(time(NULL), NULL, msg_buf), NC_PARAMTYPE_FREE);
 		for(uint16_t psid; ;psid++)
 		{
 			struct nc_session* session_ptr = nc_ps_get_session(g_pollsession, psid);
 			if(session_ptr == NULL)
+			{	
 				break;
+			}
 			else
 			{
-				nc_server_notif_send(session_ptr, notifdata, -1);
+				printf("[Notificator Thread] Sending Notification, as you wish.\n");
+				nc_session_set_notif_status(session_ptr, 1);
+				NC_MSG_TYPE msgtype = nc_server_notif_send(session_ptr, notif_data, -1);
+				if(msgtype != NC_MSG_NOTIF)
+					printf("[Notificator Thread] Error sending notification.\n");
 			}
 		}
-		printf("[Notificator Thread] Cyka Blyat!\n");
 		sleep(1);
 	}
 	printf("[Notificator Thread] Cleaning up allocated resource.\n");
