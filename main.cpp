@@ -117,6 +117,8 @@ int main(int argc, char** argv)
 	
 	module = ly_ctx_load_module(ctx, "nc-notifications", NULL);
 	nc_assert(module);
+	module = ly_ctx_load_module(ctx, "notifications", NULL);
+	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-netconf-notifications", NULL);
 	nc_assert(module);
 	module = ly_ctx_load_module(ctx, "ietf-netconf-monitoring", NULL);
@@ -187,6 +189,10 @@ int main(int argc, char** argv)
 	node = ly_ctx_get_node(ctx, NULL, "/ietf-netconf:commit", 0);
 	nc_assert(node);
 	lys_set_private(node, (void*)rpc_callback_commit);
+	
+	/* set Notifications subscription callback */
+    node = ly_ctx_get_node(ctx, NULL, "/notifications:create-subscription", 0);
+    lys_set_private(node, (void*)rpc_callback_subscribe);
 	
 	/* NETCONF server init */
 	nc_server_init(ctx);
