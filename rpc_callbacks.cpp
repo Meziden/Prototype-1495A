@@ -355,3 +355,9 @@ struct nc_server_reply* rpc_callback_commit(struct lyd_node* rpc,struct nc_sessi
 	    return nc_server_reply_err(nc_err(NC_ERR_LOCK_DENIED, g_sid_running));
 	}
 }
+
+struct nc_server_reply* rpc_callback_subscribe(struct lyd_node* rpc,struct nc_session *session)
+{
+	printf("<create-subscription> RPC Received.\n");
+	return nc_server_reply_ok();
+}
