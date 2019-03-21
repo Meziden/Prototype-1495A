@@ -23,4 +23,5 @@ struct nc_server_reply* rpc_callback_kill(struct lyd_node* rpc, struct nc_sessio
 /* <commit> operation, needs CANDIDATE feature */
 struct nc_server_reply* rpc_callback_commit(struct lyd_node* rpc, struct nc_session *session);
 
+struct nc_server_reply* rpc_callback_subscribe(struct lyd_node* rpc,struct nc_session *session);
 #endif
