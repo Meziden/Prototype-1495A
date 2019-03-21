@@ -19,3 +19,7 @@
     </stream>
   </streams>
 </netconf>
+
+<notification xmlns="urn:ietf:params:xml:ns:netconf:notification:1.0">
+  <eventTime>2011-08-23T10:08:00Z</eventTime>
+</notification>
